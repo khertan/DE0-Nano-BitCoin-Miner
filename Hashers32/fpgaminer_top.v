@@ -32,8 +32,15 @@ module fpgaminer_top (osc_clk, reset_in, halt_in, LEDS_out);
 
 	// The LOOP_LOG2 parameter is now ignored and we hard configure LOOP=3
 
-	localparam [1:0] LOOP = 2'd3;
-	localparam [31:0] GOLDEN_NONCE_OFFSET = 32'd23;
+	`ifdef CONFIG_LOOP_LOG2
+		parameter LOOP_LOG2 = `CONFIG_LOOP_LOG2;
+	`else
+		parameter LOOP_LOG2 = 1;
+	`endif
+
+	// No need to adjust these parameters
+	localparam [5:0] LOOP = (6'd1 << LOOP_LOG2);
+	localparam [31:0] GOLDEN_NONCE_OFFSET = (32'd1 << (6 - LOOP_LOG2)) + 32'd1;
 
 	input osc_clk;
 	input reset_in;
@@ -43,7 +50,7 @@ module fpgaminer_top (osc_clk, reset_in, halt_in, LEDS_out);
 	//// 
 	reg [255:0] state = 0;
 	reg [127:0] data = 0;
-	reg [31:0] nonce = 32'h00000000;
+	reg [31:0] nonce = 32'hF8000000;
 	reg poweron_reset = 1;
 
 	assign LEDS_out = nonce[31:24];
@@ -65,12 +72,10 @@ module fpgaminer_top (osc_clk, reset_in, halt_in, LEDS_out);
 	// for higher LOOP_LOG2 values. This explains why GOLDEN_NONCE_OFFSET reduces as 133, 66, 33, 17, 9, 5 etc
 	
 	wire [255:0] hash;
-	reg [255:0] hash_d1;
-	reg [1:0] cnt = 2'd0;
+	reg [6:0] cnt = 7'd0;
 	reg feedback = 1'b0;
-	reg feedback_d1 = 1'b1;
-	reg feedback_d2 = 1'b1;
-	reg phase = 1'b0;			// Alternates function between first and second SHA256
+	reg internal_feedback = 1'b0;
+	reg feedback_d1 = 1'b0;
 
 	// MJ SHA256. NB this is the second of two rounds hashing an 80 byte message (the block header), padded
 	// to 128 bytes (JSON data field) and hashed in two rounds of 64 bits each. The first is round is done by
@@ -79,17 +84,16 @@ module fpgaminer_top (osc_clk, reset_in, halt_in, LEDS_out);
 	// transform, it is NOT the complete SHA256 algorithm (which involves multiple rounds of sha256_transform).
 
 	// Using just ONE sha256_transform which alternates according to phase to perform the two SHA256 transforms.
-	sha256_transform uut (
+	sha256_transform #(.LOOP(LOOP), .NUM_ROUNDS(64)) uut (
 		.clk(hash_clk),
-		// .feedback(phase ? feedback_d2 : feedback),	// This messes up badly, so use same for both phases
-		// .cnt(phase ? cnt-2'd2 : cnt),				// and fixup by using delayed hash_d1
-		.feedback(feedback),
-		.cnt(cnt),
-		.rx_state(phase ? 256'h5be0cd191f83d9ab9b05688c510e527fa54ff53a3c6ef372bb67ae856a09e667 : state),
-		.rx_input(phase ? {256'h0000010000000000000000000000000000000000000000000000000080000000, hash_d1} :
-		{384'h000002800000000000000000000000000000000000000000000000000000000000000000000000000000000080000000, data}),
+		.feedback(internal_feedback),
+		.fb_second(cnt[LOOP_LOG2]),
+		.cnt(cnt[5:0] & (LOOP-7'd1)),
+		.rx_state_1(state),
+		.rx_input_1({384'h000002800000000000000000000000000000000000000000000000000000000000000000000000000000000080000000, data}),
 		.tx_hash(hash)
 	);
+
 
 	//// Virtual Wire Control
 	reg [255:0] midstate_buf = 0, data_buf = 0;
@@ -111,27 +115,30 @@ module fpgaminer_top (osc_clk, reset_in, halt_in, LEDS_out);
 
 	//// Control Unit
 	reg is_golden_ticket = 1'b0;
-	reg reset_d1 = 1'b1;
+	//reg reset_d1 = 1'b1;
 	wire reset = !reset_in;
-	wire [1:0] cnt_next;
+	wire [6:0] cnt_next;
 	wire [31:0] nonce_next;
 	wire feedback_next;
-	wire phase_next;
+	wire internal_feedback_next;
 
-	assign cnt_next =  (reset_d1 || (cnt==LOOP-1)) ? 2'd0 : (cnt + 2'd1);
-	assign phase_next =  reset_d1 ? 1'b0 : (cnt_next != 2'd0 ? phase : ~phase);
+		//// Control Unit
+	assign cnt_next = reset ? 7'd0 : (cnt + 7'd1) & {(LOOP-1), 1'b1};
+	// On the first count (cnt==0), load data from previous stage (no feedback)
+	// on 1..LOOP-1, take feedback from current stage
+	// This reduces the throughput by a factor of (LOOP), but also reduces the design size by the same amount
+	assign feedback_next = (cnt_next != {(LOOP_LOG2){1'b0}});
+	assign internal_feedback_next = ((cnt_next & {1'b1, (LOOP-1)}) != {(LOOP_LOG2){1'b0}});
 
+	
 	// On the first count (cnt==0), load data from previous stage (no feedback)
 	// on 1..LOOP-1, take feedback from current stage
 	// This reduces the throughput by a factor of (LOOP), but also reduces the design size by the same amount
 
-	assign feedback_next = (cnt_next != 2'b0);
 	assign nonce_next =
-		(reset | poweron_reset) ? 32'd0 : (feedback_next | phase_next) ? nonce : (nonce + 32'd1);
-		// Ought to use ~phase_next so it initializes consistently as un-inverted phase_next increments
-		// nonce in the first clock cycle (this only matters for simulation), HOWEVER in order to match
-		// the timings of hashers22sim, we need to keep the inconsistent behaviour! Perhaps fixable by
-		// starting simulation with a nonce value one lower, but keep it this way for now.
+		(reset | poweron_reset) ? 32'hF8000000 :
+		feedback_next ? nonce : (nonce + 32'd1);
+
 
 	always @ (posedge hash_clk)
 	begin
@@ -148,41 +155,32 @@ module fpgaminer_top (osc_clk, reset_in, halt_in, LEDS_out);
 
 		// We hold poweron_reset until reset is pressed. Pressing halt reapplies the initial
 		// poweron_reset hold state.
-		poweron_reset <= reset ? 0 : (halt_in ? poweron_reset : 1);		// halt_in is active low
-		reset_d1 <= reset | poweron_reset;
+		poweron_reset <= reset ? 1'd0 : (halt_in ? poweron_reset : 1'd1);	// halt_in is active low
+		//reset_d1 <= reset | poweron_reset;
 
 		cnt <= cnt_next;
 		feedback <= feedback_next;
+		internal_feedback <= internal_feedback_next;
 		feedback_d1 <= feedback;
-		feedback_d2 <= feedback_d1;
-		phase <= phase_next;
-		hash_d1 <= hash;
 
 		// Give new data to the hasher
 		state <= midstate_buf;
 		data <= {nonce_next, data_buf[95:0]};
 		nonce <= nonce_next;
 
-		// MJ This triggers on feedback ie when the hash is completed
-		//    It latches nonce into the golden_nonce register
-		//    TODO see if the calculation can be omitted and performed in the mining tcl script instead
-		
 		// Check to see if the last hash generated is valid.
-		is_golden_ticket <= (hash[255:224] == 32'h00000000) && !feedback_d2 && phase;
-
-		if (is_golden_ticket)
-		begin
-			golden_nonce <= nonce - GOLDEN_NONCE_OFFSET;
-		end
-`ifdef SIM
-		// if (!feedback)
-		//	$display ("at feedback_d0 nonce: %8x\nhash: %64x\n", nonce, hash);
-		// if (!feedback_d1)
-		//	$display ("at feedback_d1 nonce: %8x\nhash: %64x\n", nonce, hash);
-		if (!feedback_d2)
-			$display ("at feedback_d2 phase: %d nonce: %8x\nhash: %64x\n", phase, nonce, hash);
-`endif
+		is_golden_ticket <= (hash[255:224] == 32'ha41f32e7) && !feedback_d1;
+		if(is_golden_ticket)
+			begin
+			// TODO: Find a more compact calculation for this
+			//if (LOOP == 1)
+			golden_nonce <= nonce - 32'd66;
+			//else
+			//	golden_nonce <= nonce - GOLDEN_NONCE_OFFSET;
+			`ifdef SIM
+					$display ("GOLDEN NONCE: %8x\nhash: %64x\n", nonce, hash);
+			`endif
+			end // if (is_golden_ticket)
 	end
-
 endmodule
 
