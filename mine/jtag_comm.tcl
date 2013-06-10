@@ -38,6 +38,7 @@ proc push_work_to_fpga {workl} {
 
 	write_instance "STAT" [reverseHex $work(midstate)]
 	write_instance "DAT2" [string range [reverseHex $work(data)] 64 127]
+    write_instance "REST" [1]
 
 	# Reset the last seen nonce, since we've just given the FPGA new work
 	set fpga_last_nonce [read_instance GNON]

@@ -50,8 +50,8 @@ module fpgaminer_top (osc_clk, reset_in, halt_in, LEDS_out);
 	//// 
 	reg [255:0] state = 0;
 	reg [127:0] data = 0;
-	reg [31:0] nonce = 32'hF8000000;
-	reg poweron_reset = 1;
+	reg [31:0] nonce = 32'h95000000;
+	reg poweron_reset = 0;
 
 	assign LEDS_out = nonce[31:24];
 
@@ -98,12 +98,16 @@ module fpgaminer_top (osc_clk, reset_in, halt_in, LEDS_out);
 	//// Virtual Wire Control
 	reg [255:0] midstate_buf = 0, data_buf = 0;
 	wire [255:0] midstate_vw, data2_vw;
-
+	reg reset = 0;
+	wire reset_vw;
 	`ifndef SIM
 		virtual_wire # (.PROBE_WIDTH(0), .WIDTH(256), .INSTANCE_ID("STAT")) midstate_vw_blk(.probe(), .source(midstate_vw));
 		virtual_wire # (.PROBE_WIDTH(0), .WIDTH(256), .INSTANCE_ID("DAT2")) data2_vw_blk(.probe(), .source(data2_vw));
+		virtual_wire # (.PROBE_WIDTH(0), .WIDTH(1), .INSTANCE_ID("REST")) reset_vw_blk(.probe(), .source(reset_vw));
 	`endif
 
+	`ifndef SIM
+	`endif
 
 	//// Virtual Wire Output
 	reg [31:0] golden_nonce = 0;
@@ -116,12 +120,15 @@ module fpgaminer_top (osc_clk, reset_in, halt_in, LEDS_out);
 	//// Control Unit
 	reg is_golden_ticket = 1'b0;
 	//reg reset_d1 = 1'b1;
-	wire reset = !reset_in;
+	//wire reset = !reset_in;
+	
 	wire [6:0] cnt_next;
 	wire [31:0] nonce_next;
 	wire feedback_next;
 	wire internal_feedback_next;
 
+
+	
 		//// Control Unit
 	assign cnt_next = reset ? 7'd0 : (cnt + 7'd1) & {(LOOP-1), 1'b1};
 	// On the first count (cnt==0), load data from previous stage (no feedback)
@@ -136,7 +143,7 @@ module fpgaminer_top (osc_clk, reset_in, halt_in, LEDS_out);
 	// This reduces the throughput by a factor of (LOOP), but also reduces the design size by the same amount
 
 	assign nonce_next =
-		(reset | poweron_reset) ? 32'hF8000000 :
+		(reset | poweron_reset) ? 32'h95000000 :
 		feedback_next ? nonce : (nonce + 32'd1);
 
 
@@ -147,6 +154,7 @@ module fpgaminer_top (osc_clk, reset_in, halt_in, LEDS_out);
 			//data_buf <= 256'h00000000000000000000000080000000_00000000_39f3001b6b7b8d4dc14bfc31;
 			//nonce <= 30411740;
 		`else
+			reset <= reset_vw;
 			midstate_buf <= midstate_vw;
 			data_buf <= data2_vw;
 		`endif

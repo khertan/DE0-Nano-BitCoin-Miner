@@ -18,15 +18,16 @@
 #
 # Quartus II 32-bit
 # Version 12.1 Build 177 11/07/2012 SJ Web Edition
-# Date created = 12:51:32  May 26, 2013
+# Date created = 03:53:28  June 03, 2013
 #
 # -------------------------------------------------------------------------- #
 
 QUARTUS_VERSION = "12.1"
-DATE = "12:51:32  May 26, 2013"
+DATE = "03:53:28  June 03, 2013"
 
 # Revisions
 
+PROJECT_REVISION = "__dse_temp_rev"
 PROJECT_REVISION = "Khertan"
 PROJECT_REVISION = "DSE"
 PROJECT_REVISION = "fpgaminer"
